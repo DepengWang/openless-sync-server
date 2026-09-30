@@ -13,7 +13,7 @@ from app.errors import ApiError
 
 @dataclass(frozen=True)
 class SessionContext:
-    account_id: str
+    account_id: int
     access_token: str
 
 
@@ -29,7 +29,7 @@ def bearer_token(request: Request, failure_message: str = "session expired or in
     return token.strip()
 
 
-def authenticate_static_token(request: Request) -> tuple[str, str]:
+def authenticate_static_token(request: Request) -> tuple[int, str]:
     token = bearer_token(request, "invalid token")
     with db_connection() as connection:
         row = connection.execute(
@@ -45,7 +45,7 @@ def authenticate_static_token(request: Request) -> tuple[str, str]:
     return row["account_id"], row["login_name"]
 
 
-def issue_session(account_id: str) -> tuple[str, int]:
+def issue_session(account_id: int) -> tuple[str, int]:
     expires_at = iso_utc(utc_now() + timedelta(seconds=SESSION_TTL_SECONDS))
     with db_connection() as connection:
         for _ in range(3):
@@ -53,7 +53,7 @@ def issue_session(account_id: str) -> tuple[str, int]:
             try:
                 connection.execute(
                     "INSERT INTO sessions (access_token, account_id, expires_at) VALUES (?, ?, ?)",
-                    (access_token, account_id, expires_at),
+                    (token_hash(access_token), account_id, expires_at),
                 )
                 return access_token, SESSION_TTL_SECONDS
             except sqlite3.IntegrityError as error:
@@ -72,7 +72,7 @@ def require_session(request: Request) -> SessionContext:
             JOIN accounts ON accounts.account_id = sessions.account_id
             WHERE sessions.access_token = ?
             """,
-            (access_token,),
+            (token_hash(access_token),),
         ).fetchone()
     if (
         row is None

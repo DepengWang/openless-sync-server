@@ -1,6 +1,5 @@
 import argparse
 import secrets
-import uuid
 
 from app.auth import token_hash
 from app.db import db_connection, ensure_vault_metadata, initialize_database, iso_utc
@@ -10,19 +9,19 @@ def create_account(login_name: str) -> tuple[str, str]:
     if not login_name.strip():
         raise ValueError("login name must not be empty")
 
-    account_id = str(uuid.uuid4())
     static_token = secrets.token_urlsafe(32)
     with db_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """
-            INSERT INTO accounts (account_id, login_name, token_hash, revoked, created_at)
-            VALUES (?, ?, ?, 0, ?)
+            INSERT INTO accounts (login_name, token_hash, revoked, created_at)
+            VALUES (?, ?, 0, ?)
             """,
-            (account_id, login_name.strip(), token_hash(static_token), iso_utc()),
+            (login_name.strip(), token_hash(static_token), iso_utc()),
         )
+        account_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
         ensure_vault_metadata(connection, account_id)
-    return account_id, static_token
+    return str(account_id), static_token
 
 
 def main() -> None:

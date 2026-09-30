@@ -1,12 +1,12 @@
 import base64
 import binascii
+import hashlib
 import json
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import ValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.auth import SessionContext, require_session
 from app.config import (
@@ -27,8 +27,7 @@ def json_response(
     status_code: int = 200,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    content = model.model_dump()
-    return JSONResponse(status_code=status_code, content=content, headers=headers)
+    return JSONResponse(status_code=status_code, content=model.model_dump(), headers=headers)
 
 
 def require_json_content_type(request: Request) -> None:
@@ -97,6 +96,11 @@ def validate_ciphertext_size(ciphertext: str) -> None:
         raise ApiError(413, "ciphertext_too_large", "ciphertext exceeds the protocol limit")
 
 
+def request_fingerprint(method: str, path: str, if_match: str | None, body: bytes) -> str:
+    headers = json.dumps([method, path, if_match], separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(headers + b"\0" + body).hexdigest()
+
+
 @router.get("/vault")
 def get_vault_metadata(
     request: Request, session: SessionContext = Depends(require_session)
@@ -106,9 +110,9 @@ def get_vault_metadata(
     if request.headers.get("if-none-match") == metadata["etag"]:
         return Response(status_code=304, headers={"ETag": metadata["etag"]})
     body = VaultMetadataResponse(
-        ownerGithubId=session.account_id,
+        ownerGithubId=str(session.account_id),
         state=metadata["state"],
-        revision=metadata["revision"],
+        revision=int(metadata["revision"]),
         vaultId=metadata["vault_id"],
         lastOperationId=metadata["last_operation_id"],
     )
@@ -143,6 +147,7 @@ async def put_vault_snapshot(
         raise ApiError(400, "invalid_request", "Idempotency-Key is required")
     if_match = request.headers.get("if-match")
     raw_body = await read_limited_body(request)
+    fingerprint = request_fingerprint("PUT", "/v1/me/vault/snapshot", if_match, raw_body)
 
     with db_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -153,14 +158,13 @@ async def put_vault_snapshot(
             "DELETE FROM idempotency_log WHERE created_at <= ?", (retention_cutoff,)
         )
         previous = connection.execute(
-            """
-            SELECT response_status, response_body
-            FROM idempotency_log
-            WHERE account_id = ? AND operation_id = ?
-            """,
+            """SELECT response_status, response_body, fingerprint FROM idempotency_log
+               WHERE account_id = ? AND operation_id = ?""",
             (session.account_id, operation_id),
         ).fetchone()
         if previous is not None:
+            if previous["fingerprint"] is not None and previous["fingerprint"] != fingerprint:
+                raise ApiError(409, "idempotency_key_reused", "operation ID was used for a different request")
             return Response(
                 content=previous["response_body"],
                 status_code=previous["response_status"],
@@ -175,11 +179,11 @@ async def put_vault_snapshot(
         upload = parse_upload(raw_body)
         if upload.operationId != operation_id:
             raise ApiError(400, "invalid_request", "Idempotency-Key must match operationId")
-        if upload.ownerGithubId != session.account_id:
+        if upload.ownerGithubId != str(session.account_id):
             raise ApiError(403, "forbidden", "ownerGithubId does not match the session account")
         if upload.baseRevision < 0 or upload.revision < 1:
             raise ApiError(400, "invalid_request", "revision values are out of range")
-        if upload.baseRevision != metadata["revision"]:
+        if upload.baseRevision != int(metadata["revision"]):
             raise ApiError(409, "revision_conflict", "vault revision has changed")
         if upload.revision != upload.baseRevision + 1:
             raise ApiError(400, "invalid_request", "revision must equal baseRevision + 1")
@@ -191,22 +195,15 @@ async def put_vault_snapshot(
         etag = new_etag()
         now = iso_utc()
         connection.execute(
-            """
-            INSERT INTO vault_snapshot (account_id, body_json, revision)
-            VALUES (?, ?, ?)
-            ON CONFLICT(account_id) DO UPDATE SET
-                body_json = excluded.body_json,
-                revision = excluded.revision
-            """,
+            """INSERT INTO vault_snapshot (account_id, body_json, revision)
+               VALUES (?, ?, ?)
+               ON CONFLICT(account_id) DO UPDATE SET
+                   body_json=excluded.body_json, revision=excluded.revision""",
             (session.account_id, raw_body.decode("utf-8"), new_revision),
         )
         connection.execute(
-            """
-            UPDATE vault_metadata
-            SET vault_id = ?, state = 'active', revision = ?,
-                last_operation_id = ?, etag = ?, updated_at = ?
-            WHERE account_id = ?
-            """,
+            """UPDATE vault_metadata SET vault_id=?, state='active', revision=?,
+               last_operation_id=?, etag=?, updated_at=? WHERE account_id=?""",
             (upload.vaultId, new_revision, operation_id, etag, now, session.account_id),
         )
         response = OperationCommitResponse(
@@ -216,12 +213,10 @@ async def put_vault_snapshot(
         )
         response_body = response.model_dump_json()
         connection.execute(
-            """
-            INSERT INTO idempotency_log
-                (account_id, operation_id, response_status, response_body, created_at)
-            VALUES (?, ?, 200, ?, ?)
-            """,
-            (session.account_id, operation_id, response_body, now),
+            """INSERT INTO idempotency_log
+               (account_id, operation_id, response_status, response_body, created_at, fingerprint)
+               VALUES (?, ?, 200, ?, ?, ?)""",
+            (session.account_id, operation_id, response_body, now, fingerprint),
         )
 
     return Response(
@@ -241,12 +236,10 @@ def delete_vault(session: SessionContext = Depends(require_session)) -> Response
             "DELETE FROM vault_snapshot WHERE account_id = ?", (session.account_id,)
         )
         connection.execute(
-            """
-            UPDATE vault_metadata
-            SET vault_id = NULL, state = 'empty', revision = 0,
-                last_operation_id = NULL, etag = ?, updated_at = ?
-            WHERE account_id = ?
-            """,
+            """UPDATE vault_metadata SET vault_id=NULL, state='empty', revision=0,
+               last_operation_id=NULL, etag=?, updated_at=?, key_id=NULL,
+               payload_schema_version=NULL, ciphertext_bytes=0, ciphertext_sha256=NULL
+               WHERE account_id=?""",
             (new_etag(), iso_utc(), session.account_id),
         )
     return Response(status_code=204)
@@ -258,10 +251,8 @@ def get_operation(
 ) -> JSONResponse:
     with db_connection() as connection:
         row = connection.execute(
-            """
-            SELECT operation_id FROM idempotency_log
-            WHERE account_id = ? AND operation_id = ?
-            """,
+            """SELECT operation_id FROM idempotency_log
+               WHERE account_id = ? AND operation_id = ?""",
             (session.account_id, operation_id),
         ).fetchone()
     if row is None:

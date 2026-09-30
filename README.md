@@ -24,4 +24,10 @@ docker compose up -d --build
 
 The service listens on container port `8080`. In the current deployment it is bound to host loopback port `8081`; the HTTPS reverse proxy routes `/v1/` to that port.
 
+## Protocol and authentication
+
+The server follows the v1 self-hosted contract in [`openless_python_server_docker_v1.md`](openless_python_server_docker_v1.md): account IDs are SQLite auto-increment integers exposed as decimal strings, revisions remain integers, and uploaded encrypted JSON is stored and returned unchanged. It never decrypts or interprets encrypted business data. Implementation hardening also uses transactional compare-and-swap writes, idempotent replay, SQLite `DELETE` journaling with `synchronous=FULL` and `secure_delete=ON`, and hashed short-lived sessions.
+
+Authentication remains self-hosted: an administrator creates an account and static token with `app.admin_cli`; `POST /v1/auth/token` exchanges that token for a 15-minute Bearer session. GitHub OAuth is not used. The `githubClientId` capability must match the Windows client's compatibility value `Ov23liyv3nEucG7oMHNE`; `githubId` and `ownerGithubId` carry this server's numeric account ID as a decimal string.
+
 For the API contract, deployment notes, and account administration, see [`openless_python_server_docker.md`](openless_python_server_docker.md).

@@ -30,7 +30,7 @@ class TokenResponse(BaseModel):
 class VaultMetadataResponse(BaseModel):
     ownerGithubId: str
     state: Literal["empty", "active"]
-    revision: int
+    revision: StrictInt
     vaultId: str | None
     lastOperationId: str | None
 
@@ -49,5 +49,5 @@ class SnapshotUpload(BaseModel):
 
 class OperationCommitResponse(BaseModel):
     operationId: str
-    revision: int
+    revision: StrictInt
     status: Literal["committed"]
