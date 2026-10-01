@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from uuid import uuid4
 
 from app.db import initialize_database
-from app.errors import ApiError, api_error_handler
+from app.errors import ApiError, api_error_handler, protocol_error_response
 from app.routes import auth, capabilities, vault
 
 
@@ -31,9 +31,8 @@ app.add_exception_handler(ApiError, api_error_handler)
 async def validation_error_handler(
     request: Request, _error: RequestValidationError
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content={"code": "invalid_request", "message": "request validation failed"},
+    return protocol_error_response(
+        request, 400, "invalid_request", "request validation failed"
     )
 
 

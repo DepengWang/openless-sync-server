@@ -1,13 +1,14 @@
 import hashlib
+import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
-from uuid import uuid4
+from uuid import RFC_4122, UUID, uuid4
 
-from app.config import DB_PATH, STORAGE_PATH
+from app.config import DB_PATH, IDEMPOTENCY_RETENTION_SECONDS, STORAGE_PATH
 
 
 SCHEMA = """
@@ -28,11 +29,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS vault_metadata (
     account_id        INTEGER PRIMARY KEY REFERENCES accounts(account_id),
     vault_id          TEXT,
+    key_id            TEXT,
     state             TEXT NOT NULL DEFAULT 'empty',
     revision          INTEGER NOT NULL DEFAULT 0,
+    payload_schema_version INTEGER,
+    ciphertext_bytes  INTEGER NOT NULL DEFAULT 0,
+    ciphertext_sha256 TEXT,
     last_operation_id TEXT,
     etag              TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+    updated_at        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS vault_snapshot (
@@ -102,8 +107,11 @@ def initialize_database() -> None:
             _migrate_account_ids_to_integer(connection)
         connection.executescript(SCHEMA)
         _add_column(connection, "idempotency_log", "fingerprint", "TEXT")
+        _validate_live_idempotency_records(connection)
+        _migrate_vault_metadata(connection)
+        _migrate_legacy_deleted_metadata(connection)
         _hash_legacy_sessions(connection)
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 4")
 
 
 def _migrate_account_ids_to_integer(connection: sqlite3.Connection) -> None:
@@ -321,6 +329,194 @@ def _add_column(connection: sqlite3.Connection, table: str, column: str, definit
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _migrate_vault_metadata(connection: sqlite3.Connection) -> None:
+    """Upgrade v2 metadata without silently discarding active encrypted snapshots."""
+    columns = {
+        row["name"]: row for row in connection.execute("PRAGMA table_info(vault_metadata)")
+    }
+    required = {
+        "account_id", "vault_id", "key_id", "state", "revision",
+        "payload_schema_version", "ciphertext_bytes", "ciphertext_sha256",
+        "last_operation_id", "etag", "updated_at",
+    }
+    if required.issubset(columns) and not columns["updated_at"]["notnull"]:
+        return
+
+    snapshots_exist = connection.execute("SELECT 1 FROM vault_snapshot LIMIT 1").fetchone()
+    active_exists = connection.execute(
+        "SELECT 1 FROM vault_metadata WHERE state='active' LIMIT 1"
+    ).fetchone()
+    has_full_metadata = required.issubset(columns)
+    if (active_exists or snapshots_exist) and not has_full_metadata:
+        raise RuntimeError(
+            "cannot automatically migrate an active v2 vault to v3: its stored snapshot "
+            "uses the v2 wire format. Export/reconcile the vault before upgrading."
+        )
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            """CREATE TABLE vault_metadata_v3 (
+                 account_id INTEGER PRIMARY KEY REFERENCES accounts(account_id),
+                 vault_id TEXT,
+                 key_id TEXT,
+                 state TEXT NOT NULL DEFAULT 'empty',
+                 revision INTEGER NOT NULL DEFAULT 0,
+                 payload_schema_version INTEGER,
+                 ciphertext_bytes INTEGER NOT NULL DEFAULT 0,
+                 ciphertext_sha256 TEXT,
+                 last_operation_id TEXT,
+                 etag TEXT NOT NULL,
+                 updated_at TEXT
+               )"""
+        )
+        if has_full_metadata:
+            connection.execute(
+                """INSERT INTO vault_metadata_v3
+                   (account_id, vault_id, key_id, state, revision, payload_schema_version,
+                    ciphertext_bytes, ciphertext_sha256, last_operation_id, etag, updated_at)
+                   SELECT account_id, vault_id, key_id, state, revision,
+                          payload_schema_version, ciphertext_bytes, ciphertext_sha256,
+                          last_operation_id, etag, updated_at
+                   FROM vault_metadata"""
+            )
+        else:
+            connection.execute(
+                """INSERT INTO vault_metadata_v3
+                   (account_id, state, revision, last_operation_id, etag, updated_at)
+                   SELECT account_id, 'empty', revision, last_operation_id, etag, NULL
+                   FROM vault_metadata"""
+            )
+        connection.execute("DROP TABLE vault_metadata")
+        connection.execute("ALTER TABLE vault_metadata_v3 RENAME TO vault_metadata")
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+def _migrate_legacy_deleted_metadata(connection: sqlite3.Connection) -> None:
+    """Restore v3's lossy post-delete metadata from its retained delete receipt."""
+    rows = connection.execute(
+        """SELECT account_id, revision, last_operation_id FROM vault_metadata
+           WHERE state='empty' AND revision > 0"""
+    ).fetchall()
+    if not rows:
+        return
+
+    recovered: list[tuple[str, str, int]] = []
+    for row in rows:
+        account_id = row["account_id"]
+        revision = int(row["revision"])
+        operation_id = row["last_operation_id"]
+        if not operation_id:
+            raise RuntimeError(
+                f"cannot recover deleted vault metadata for account {account_id}: "
+                "last operation ID is missing"
+            )
+        receipt_row = connection.execute(
+            """SELECT response_status, response_body, created_at FROM idempotency_log
+               WHERE account_id=? AND operation_id=?""",
+            (account_id, operation_id),
+        ).fetchone()
+        snapshot_exists = connection.execute(
+            "SELECT 1 FROM vault_snapshot WHERE account_id=?", (account_id,)
+        ).fetchone()
+        try:
+            parsed_operation = UUID(operation_id)
+            receipt = json.loads(receipt_row["response_body"]) if receipt_row else None
+            vault_id = receipt["vaultId"]
+            committed_at = receipt["committedAt"]
+            parsed_uuid = UUID(vault_id)
+            parsed_time = datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            parsed_operation = None
+            receipt = None
+            parsed_uuid = None
+            parsed_time = None
+        valid = (
+            not snapshot_exists
+            and receipt_row is not None
+            and receipt_row["response_status"] == 200
+            and isinstance(receipt, dict)
+            and set(receipt)
+            == {
+                "operationId", "status", "kind", "committedRevision", "committedAt",
+                "vaultId", "ciphertextSha256",
+            }
+            and receipt.get("operationId") == operation_id
+            and parsed_operation is not None
+            and str(parsed_operation) == operation_id
+            and parsed_operation.version == 4
+            and parsed_operation.variant == RFC_4122
+            and receipt.get("status") == "committed"
+            and receipt.get("kind") == "delete"
+            and receipt.get("committedRevision") == str(revision)
+            and receipt.get("ciphertextSha256") is None
+            and isinstance(vault_id, str)
+            and parsed_uuid is not None
+            and str(parsed_uuid) == vault_id
+            and parsed_uuid.version == 4
+            and parsed_uuid.variant == RFC_4122
+            and isinstance(committed_at, str)
+            and committed_at.endswith("Z")
+            and parsed_time is not None
+            and parsed_time.utcoffset() == timedelta(0)
+            and receipt_row["created_at"] == committed_at
+        )
+        if not valid:
+            raise RuntimeError(
+                f"cannot recover deleted vault metadata for account {account_id}: "
+                "matching complete delete receipt was not found"
+            )
+        recovered.append((vault_id, committed_at, account_id))
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for vault_id, committed_at, account_id in recovered:
+            connection.execute(
+                """UPDATE vault_metadata SET state='deleted', vault_id=?, key_id=NULL,
+                   payload_schema_version=NULL, ciphertext_bytes=0, ciphertext_sha256=NULL,
+                   updated_at=?, etag=? WHERE account_id=? AND state='empty' AND revision > 0""",
+                (vault_id, committed_at, new_etag(), account_id),
+            )
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+def _validate_live_idempotency_records(connection: sqlite3.Connection) -> None:
+    """Do not expose incomplete v2 responses as v3 operation receipts after upgrade."""
+    cutoff = iso_utc(utc_now() - timedelta(seconds=IDEMPOTENCY_RETENTION_SECONDS))
+    rows = connection.execute(
+        """SELECT response_body, fingerprint FROM idempotency_log
+           WHERE created_at >= ?""",
+        (cutoff,),
+    ).fetchall()
+    for row in rows:
+        try:
+            body = json.loads(row["response_body"])
+        except (TypeError, ValueError):
+            body = None
+        required_fields = {
+            "operationId", "status", "kind", "committedRevision", "committedAt",
+            "vaultId", "ciphertextSha256",
+        }
+        if (
+            not isinstance(body, dict)
+            or set(body) != required_fields
+            or row["fingerprint"] is None
+        ):
+            raise RuntimeError(
+                "cannot automatically migrate recent v2 idempotency records to v3: "
+                "their operation receipts are incomplete; wait for their retention period "
+                "to expire or reconcile them before upgrading"
+            )
+
+
 def _hash_if_plaintext(token: str) -> str:
     if re.fullmatch(r"[0-9a-f]{64}", token):
         return token
@@ -339,12 +535,11 @@ def _hash_legacy_sessions(connection: sqlite3.Connection) -> None:
 
 
 def ensure_vault_metadata(connection: sqlite3.Connection, account_id: int) -> sqlite3.Row:
-    now = iso_utc()
     connection.execute(
         """INSERT OR IGNORE INTO vault_metadata
            (account_id, vault_id, state, revision, last_operation_id, etag, updated_at)
-           VALUES (?, NULL, 'empty', 0, NULL, ?, ?)""",
-        (account_id, new_etag(), now),
+           VALUES (?, NULL, 'empty', 0, NULL, ?, NULL)""",
+        (account_id, new_etag()),
     )
     row = connection.execute(
         "SELECT * FROM vault_metadata WHERE account_id=?", (account_id,)

@@ -17,37 +17,86 @@ class ProtocolCapabilities(BaseModel):
 
 
 class AccountResponse(BaseModel):
-    githubId: str
-    login: str
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    githubId: StrictStr
+    login: StrictStr
 
 
 class TokenResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: StrictInt
     account: AccountResponse
-    accessToken: str
-    expiresIn: int
+    accessToken: StrictStr
+    tokenType: Literal["Bearer"]
+    expiresIn: StrictInt
 
 
 class VaultMetadataResponse(BaseModel):
-    ownerGithubId: str
-    state: Literal["empty", "active"]
-    revision: StrictInt
-    vaultId: str | None
-    lastOperationId: str | None
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: StrictInt
+    state: Literal["empty", "active", "deleted"]
+    ownerGithubId: StrictStr
+    revision: StrictStr
+    vaultId: StrictStr | None
+    keyId: StrictStr | None
+    updatedAt: StrictStr | None
+    payloadSchemaVersion: StrictInt | None
+    ciphertextBytes: StrictInt
+    ciphertextSha256: StrictStr | None
+    lastOperationId: StrictStr | None
+
+
+class KdfParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: StrictStr
+    version: StrictInt
+    memoryKiB: StrictInt
+    iterations: StrictInt
+    parallelism: StrictInt
+    salt: StrictStr
 
 
 class SnapshotUpload(BaseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True)
 
+    protocolVersion: StrictInt
+    payloadSchemaVersion: StrictInt
     ownerGithubId: StrictStr
     vaultId: StrictStr
-    revision: StrictInt
-    baseRevision: StrictInt
+    keyId: StrictStr
+    baseRevision: StrictStr
+    revision: StrictStr
     operationId: StrictStr
-    kind: Literal["create", "snapshot", "passwordChange"]
+    kind: Literal["create", "snapshot", "password_change"]
+    cryptoProfile: StrictStr
+    kdf: KdfParameters
+    aead: StrictStr
+    codec: StrictStr
+    nonce: StrictStr
     ciphertext: StrictStr
+    ciphertextSha256: StrictStr
 
 
-class OperationCommitResponse(BaseModel):
-    operationId: str
-    revision: StrictInt
+class DeleteVaultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: StrictInt
+    baseRevision: StrictStr
+    operationId: StrictStr
+    expectedVaultId: StrictStr
+
+
+class OperationReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operationId: StrictStr
     status: Literal["committed"]
+    kind: StrictStr
+    committedRevision: StrictStr
+    committedAt: StrictStr
+    vaultId: StrictStr
+    ciphertextSha256: StrictStr | None

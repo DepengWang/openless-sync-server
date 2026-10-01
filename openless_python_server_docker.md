@@ -1,5 +1,7 @@
 # OpenLess 自建同步服务器 — Python + Docker 开发规格书
 
+> 历史规格（早期版本）：部分协议细节已由后续实现修正。当前行为以 `README.md` 和 `app/` 中的实现为准；此文档仅保留作需求演进背景，不作为当前联调依据。
+
 ## 0. 背景（给实现者的上下文）
 
 OpenLess 是一个开源的跨平台听写/输入法应用（Windows/macOS/Linux 桌面端 + Android），客户端代码在 `github.com/Open-Less/openless`。它自带一套**端到端加密（E2EE）多设备同步功能**，客户端 Rust 代码位于 `openless-all/app/crates/openless-core/src/cloud_sync_e2ee*`。

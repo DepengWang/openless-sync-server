@@ -15,8 +15,10 @@ def create_session(request: Request) -> JSONResponse:
     account_id, login_name = authenticate_static_token(request)
     access_token, expires_in = issue_session(account_id)
     response = TokenResponse(
+        protocolVersion=1,
         account=AccountResponse(githubId=str(account_id), login=login_name),
         accessToken=access_token,
+        tokenType="Bearer",
         expiresIn=expires_in,
     )
     return JSONResponse(content=response.model_dump())
