@@ -36,6 +36,14 @@ The startup migration preserves empty v2 accounts and sessions. It intentionally
 
 Run the protocol tests with `uv run --with-requirements requirements-test.txt python -m pytest -q` (or install `requirements-test.txt` in a dedicated virtual environment).
 
+## Current OpenLess sync scope (reference only)
+
+This summarizes the OpenLess client's 2.0 E2EE cloud-sync scope for product context only; it is unrelated to this server's feature scope and is not a compatibility promise. See the upstream [encrypted cloud-sync documentation](https://github.com/Open-Less/openless/blob/v2.0.0-Beta.4-tauri/docs/encrypted-cloud-sync.md) and [document-type registry](https://github.com/Open-Less/openless/blob/v2.0.0-Beta.4-tauri/openless-all/app/crates/openless-core/src/cloud_sync_e2ee_protocol/types.rs). This server stores and returns one opaque encrypted snapshot; it does not inspect or synchronize these categories separately.
+
+The client uses an explicit allowlist of 11 logical document types: preferences and UI preferences, channels and provider credentials, dictionary and vocabulary presets, corrections, style packs, text history, activity, and device profiles. Deletions are represented by tombstones. Provider API keys and related settings are included only inside the client-encrypted payload.
+
+OAuth login state, sync tokens/passwords/derived keys, device private keys, remote-input PINs, operating-system permission grants, audio recordings, model weights, caches, and application binaries are excluded. Restore also preserves device-bound state and does not grant operating-system permissions.
+
 ## Implementation reference
 
 The server-side sync implementation was informed by the original official [Open-Less/openless-cloud-sync](https://github.com/Open-Less/openless-cloud-sync) repository, whose original sign-in flow uses GitHub authentication. This project references its sync-server implementation and behavior; it does **not** adopt GitHub authentication or depend on GitHub as a sync mechanism. Authentication here is self-hosted: an administrator issues static tokens locally with `app.admin_cli`.

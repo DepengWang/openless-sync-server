@@ -42,6 +42,14 @@ uv run --with-requirements requirements-test.txt python -m pytest -q
 
 也可以在专用虚拟环境中安装 `requirements-test.txt` 后运行测试。
 
+## OpenLess 当前同步范围（仅供参考）
+
+以下仅概述 OpenLess 客户端 2.0 E2EE 云同步范围，作为了解上游产品的参考；这与本项目服务端自身的功能范围无关，也不构成兼容性承诺。详情见上游的[加密云同步文档](https://github.com/Open-Less/openless/blob/v2.0.0-Beta.4-tauri/docs/encrypted-cloud-sync.md)和[文档类型登记表](https://github.com/Open-Less/openless/blob/v2.0.0-Beta.4-tauri/openless-all/app/crates/openless-core/src/cloud_sync_e2ee_protocol/types.rs)。本服务端只原样存取一个不透明的加密快照，不会逐项解析或同步这些类别。
+
+客户端采用显式白名单，包含 11 类逻辑文档：偏好设置与界面偏好、渠道与服务商凭据、词典与词汇预设、纠错记录、风格包、文本历史、活动记录和设备配置档案；删除通过 tombstone（删除标记）记录。服务商 API 密钥及相关设置仅作为客户端加密载荷的一部分上传。
+
+OAuth 登录状态、同步 token/密码/派生密钥、设备私钥、远程输入 PIN、操作系统权限授权、录音音频、模型权重、缓存和应用程序二进制文件均不在同步范围内。恢复数据时也会保留设备绑定状态，且不会授予操作系统权限。
+
 ## 实现参考
 
 服务端同步实现参考了 Open-Less 官方原始仓库 [Open-Less/openless-cloud-sync](https://github.com/Open-Less/openless-cloud-sync)，其原始登录流程使用 GitHub 认证。本项目借鉴的是同步服务端的实现与行为，**不沿用 GitHub 认证，也不依赖 GitHub 作为同步机制**；这里由管理员在本机签发静态 token，自行管理认证。
