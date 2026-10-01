@@ -35,6 +35,12 @@ Authentication remains self-hosted: an administrator can create accounts and one
 
 The optional `/v1/admin` page uses the fixed `ADMIN_TOKEN` environment value through an `X-Admin-Token` header. Its usage figures represent each account's current ciphertext size, not the exact physical SQLite disk-space allocation. The admin page does not store the management token in the URL or browser storage.
 
+### Admin interface example
+
+The screenshot shows the management page after accounts have been created; the account names, snapshot sizes, and timestamps reflect the state at capture time.
+
+![OpenLess sync server admin interface after account creation](docs/images/admin-interface-example.png)
+
 The startup migration preserves empty v2 accounts and sessions. It intentionally refuses to auto-upgrade a v2 database containing a stored snapshot or a still-live incomplete v2 operation receipt, because those values cannot be reconstructed losslessly in the current format.
 
 Run the protocol tests with `uv run --with-requirements requirements-test.txt python -m pytest -q` (or install `requirements-test.txt` in a dedicated virtual environment).
