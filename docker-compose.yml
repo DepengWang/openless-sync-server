@@ -13,4 +13,5 @@ services:
     environment:
       DB_PATH: /app/data/sync.db
       STORAGE_PATH: /app/data
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     restart: unless-stopped

@@ -4,6 +4,7 @@ from pathlib import Path
 
 STORAGE_PATH = Path(os.environ.get("STORAGE_PATH", "data"))
 DB_PATH = Path(os.environ.get("DB_PATH", str(STORAGE_PATH / "sync.db")))
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
 PROTOCOL_VERSION = 1
 CRYPTO_PROFILE = "argon2id-xchacha20poly1305-v1"

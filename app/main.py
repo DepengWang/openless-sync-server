@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from app.db import initialize_database
 from app.errors import ApiError, api_error_handler, protocol_error_response
-from app.routes import auth, capabilities, vault
+from app.routes import admin, auth, capabilities, vault
 
 
 @asynccontextmanager
@@ -50,3 +50,4 @@ async def private_response_headers(request: Request, call_next):
 app.include_router(capabilities.router)
 app.include_router(auth.router)
 app.include_router(vault.router)
+app.include_router(admin.router)

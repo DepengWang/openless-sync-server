@@ -12,11 +12,12 @@ The values below are non-secret examples from `.env.example`:
 DB_PATH=/app/data/sync.db
 STORAGE_PATH=/app/data
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ADMIN_TOKEN=
 ```
 
 `DB_PATH` and `STORAGE_PATH` are currently set directly in `docker-compose.yml`. `PIP_INDEX_URL` can override the package index used during image builds.
 
-Use `.env.example` as a template and keep real `.env` files, static tokens, passwords, private keys, and certificate contents out of Git. Runtime data under `data/` is excluded from Git.
+To enable the private admin page, set `ADMIN_TOKEN` in your local `.env` to a long random value (at least 32 characters). Open `/v1/admin` and enter that value; the page lets you create accounts and view each account's current snapshot ciphertext size. A newly created account's static token is returned only once. If `ADMIN_TOKEN` is unset or too short, the admin APIs remain disabled. Never commit the real `.env` file, static tokens, passwords, private keys, or certificate contents. Runtime data under `data/` is excluded from Git.
 
 ## Run
 
@@ -30,7 +31,9 @@ The service listens on container port `8080`. In the current deployment it is bo
 
 The server provides the self-hosted OpenLess sync contract: account IDs are SQLite auto-increment integers exposed as decimal strings, and revisions are stored as integers but serialized as canonical decimal strings. Snapshot JSON is stored and returned unchanged; the server only decodes ciphertext bytes to enforce size limits and compute SHA-256, and never decrypts or interprets encrypted business data. PUT and DELETE use transactional compare-and-swap, full operation receipts, and idempotent replay. SQLite uses `DELETE` journaling with `synchronous=FULL` and `secure_delete=ON`; session tokens are short-lived and hashed at rest.
 
-Authentication remains self-hosted: an administrator creates an account and static token with `app.admin_cli`; `POST /v1/auth/token` exchanges that token for a 15-minute Bearer session and returns `protocolVersion` and `tokenType`. GitHub OAuth is not used. The `githubClientId` capability must match the Windows client's compatibility value `Ov23liyv3nEucG7oMHNE`; `githubId` and `ownerGithubId` carry this server's numeric account ID as a decimal string.
+Authentication remains self-hosted: an administrator can create accounts and one-time static tokens through the private `/v1/admin` page or `app.admin_cli`; `POST /v1/auth/token` exchanges a user's static token for a 15-minute Bearer session and returns `protocolVersion` and `tokenType`. GitHub OAuth is not used. The `githubClientId` capability must match the Windows client's compatibility value `Ov23liyv3nEucG7oMHNE`; `githubId` and `ownerGithubId` carry this server's numeric account ID as a decimal string.
+
+The optional `/v1/admin` page uses the fixed `ADMIN_TOKEN` environment value through an `X-Admin-Token` header. Its usage figures represent each account's current ciphertext size, not the exact physical SQLite disk-space allocation. The admin page does not store the management token in the URL or browser storage.
 
 The startup migration preserves empty v2 accounts and sessions. It intentionally refuses to auto-upgrade a v2 database containing a stored snapshot or a still-live incomplete v2 operation receipt, because those values cannot be reconstructed losslessly in the current format.
 
