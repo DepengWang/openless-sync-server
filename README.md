@@ -1,5 +1,7 @@
 # OpenLess Sync Server
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A self-hosted, Docker Compose-based sync API for OpenLess. The server stores encrypted vault snapshots as opaque data; clients are responsible for encryption and decryption.
 
 ## Configuration
